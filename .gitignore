@@ -1,0 +1,6 @@
+.terraform
+private.sh
+public.sh
+terraform.tfstate
+terraform.tfstate.backup
+.terraform.lock.hcl
