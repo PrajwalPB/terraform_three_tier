@@ -195,6 +195,46 @@ EOF
 }
 
 
+
+########## creating SECOND ec2 instance ie private instance (tomcat) #########
+resource "aws_instance" "private-server-2" {
+  ami             = "ami-091a58610910a87a9"
+  instance_type   = "t2.micro"
+  vpc_security_group_ids = [aws_security_group.private_tomcat_sg.id]
+  subnet_id       = aws_subnet.private-subnet-2.id
+  key_name = "pbsinga"
+  user_data  = <<EOF
+#!/bin/bash
+sudo yum install java-11-amazon-corretto.x86_64 -y
+sudo yum install mariadb105-test.x86_64 -y
+wget https://dlcdn.apache.org/tomcat/tomcat-8/v8.5.91/bin/apache-tomcat-8.5.91.zip
+sudo unzip apache-tomcat-8.5.91.zip
+sudo mv apache-tomcat-8.5.91 /mnt/tomcat
+wget https://s3-us-west-2.amazonaws.com/studentapi-cit/student.war
+wget https://s3-us-west-2.amazonaws.com/studentapi-cit/mysql-connector.jar
+sudo mv student.war /mnt/tomcat/webapps/
+sudo mv mysql-connector.jar /mnt/tomcat/lib/
+inserted_content='    <Resource name="jdbc/TestDB" auth="Container" type="javax.sql.DataSource"
+        maxTotal="500" maxIdle="30" maxWaitMillis="1000"
+        username="admin" password="12345678" driverClassName="com.mysql.jdbc.Driver"
+        url="jdbc:mysql://${aws_db_instance.db.endpoint}/studentapp"/>'
+
+context_file="/mnt/tomcat/conf/context.xml"
+awk -v content="$inserted_content" '/<Context>/ { print; print content; next } 1' "$context_file" > temp_file && mv temp_file "$context_file"  
+mysql -h ${aws_db_instance.db.address} -u admin -p12345678 -e "CREATE DATABASE studentapp;"
+mysql -h ${aws_db_instance.db.address} -u admin -p12345678 -D studentapp -e "CREATE TABLE if not exists students(student_id INT NOT NULL AUTO_INCREMENT,student_name VARCHAR(100) NOT NULL,student_addr VARCHAR(100) NOT NULL,student_age VARCHAR(3) NOT NULL,student_qual VARCHAR(20) NOT NULL,student_percent VARCHAR(10) NOT NULL,student_year_passed VARCHAR(10) NOT NULL,PRIMARY KEY (student_id));"  
+sudo chmod 0755 /mnt/tomcat/bin/*
+cd /mnt/tomcat/
+sudo ./bin/catalina.sh start
+EOF
+  depends_on = [aws_db_instance.db]
+  associate_public_ip_address = false
+  tags = {
+    Name = "Private_server_2"
+  }
+}
+
+
 ############ creating a jump server using nginx as reverse proxy ############
 resource "aws_instance" "publuic_instance" {
   ami             = "ami-091a58610910a87a9"
@@ -213,13 +253,15 @@ server {
     server_name tomcat;
 
     location / {
-        proxy_pass http://${aws_instance.private-server.private_ip}:8080;
+        proxy_pass http://${aws_lb.application_lb.dns_name}:8080;
     }
 }
 NGINX_EOF
 
 sudo systemctl restart nginx
 EOF
+  
+  depends_on = [aws_lb.application_lb]
 
   tags = {
     Name = "Public_Server"
@@ -314,4 +356,59 @@ data "template_file" "context_xml_template" {
     url="jdbc:mysql://${aws_db_instance.db.endpoint}:3306/mydatabase"/>
 </Context>
 EOT
+}
+
+
+
+
+############## Creating a Application Load balacner #################
+
+resource "aws_lb" "application_lb" {
+  name = "applicationloadbalancer"
+  load_balancer_type = "application"
+  internal = true
+  subnets = [aws_subnet.private-subnet-1.id,aws_subnet.private-subnet-2.id]
+  security_groups = [aws_security_group.private_tomcat_sg.id]  
+}
+
+resource "aws_lb_target_group" "target_group" {
+  name = "albtargetgroup"
+  port = 8080
+  protocol = "HTTP"
+  vpc_id = aws_vpc.my-vpc.id
+}
+
+resource "aws_lb_target_group_attachment" "elb1" {
+  target_group_arn = aws_lb_target_group.target_group.arn
+  target_id = aws_instance.private-server.id
+
+  depends_on = [aws_instance.private-server]
+  
+}
+
+resource "aws_lb_target_group_attachment" "elb2" {
+  target_group_arn = aws_lb_target_group.target_group.arn
+  target_id = aws_instance.private-server-2.id
+
+  depends_on = [aws_instance.private-server-2]
+  
+}
+
+
+resource "aws_lb_listener" "elb-listner" {
+  load_balancer_arn = aws_lb.application_lb.arn
+  port = "8080"
+  protocol = "HTTP"
+  
+  default_action {
+    type = "forward"
+    target_group_arn = aws_lb_target_group.target_group.arn
+    
+  }
+  
+}
+
+output "load_balaner_dns_name" {
+  value = aws_lb.application_lb.dns_name
+  
 }
