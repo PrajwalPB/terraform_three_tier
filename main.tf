@@ -303,15 +303,3 @@ resource "aws_security_group" "rds_sg" {
 
 }
 
-
-
-data "template_file" "context_xml_template" {
-  template = <<-EOT
-<Context>
-  <Resource name="jdbc/TestDB" auth="Container" type="javax.sql.DataSource"
-    maxTotal="500" maxIdle="30" maxWaitMillis="1000"
-    username="admin" password="12345678" driverClassName="com.mysql.jdbc.Driver"
-    url="jdbc:mysql://${aws_db_instance.db.endpoint}:3306/mydatabase"/>
-</Context>
-EOT
-}
